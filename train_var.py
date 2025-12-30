@@ -114,6 +114,7 @@ def train(rank, a, h):
             if rank == 0:
                 start_b = time.time()
             x, y, _, y_mel = batch
+
             x = torch.autograd.Variable(x.to(device, non_blocking=True))
             y = torch.autograd.Variable(y.to(device, non_blocking=True))
             y_mel = torch.autograd.Variable(y_mel.to(device, non_blocking=True))
@@ -137,6 +138,8 @@ def train(rank, a, h):
                 elif y_mel.size(-1) < frames:
                     pad = frames - y_mel.size(-1)
                     y_mel = F.pad(y_mel, (0, pad))
+                
+            print(y_mel.size())
                 
             y_g_hat_mel = mel_spectrogram(y_g_hat.squeeze(1), h.n_fft, h.num_mels, h.sampling_rate, h.hop_size, h.win_size,
                                           h.fmin, h.fmax_for_loss)

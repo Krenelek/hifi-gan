@@ -127,7 +127,7 @@ class MelDataset(torch.utils.data.Dataset):
         audio = torch.FloatTensor(audio)
         audio = audio.unsqueeze(0)
 
-        if not self.fine_tuning:
+        if not self.fine_tuning and not self.base_mels_path:
             if self.split:
                 if audio.size(1) >= self.segment_size:
                     max_audio_start = audio.size(1) - self.segment_size
@@ -143,7 +143,14 @@ class MelDataset(torch.utils.data.Dataset):
             mel = np.load(
                 os.path.join(self.base_mels_path, os.path.splitext(os.path.split(filename)[-1])[0] + '.npy'))
             mel = torch.from_numpy(mel)
+            # print(f"loaded {os.path.join(self.base_mels_path, os.path.splitext(os.path.split(filename)[-1])[0] + '.npy')}")
+            # print(mel.shape)
+            mel = mel.transpose(0, 1).contiguous()
 
+            ***REMOVED***
+            # torch.Size([784, 80])
+
+    
             if len(mel.shape) < 3:
                 mel = mel.unsqueeze(0)
 
