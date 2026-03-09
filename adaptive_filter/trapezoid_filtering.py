@@ -31,6 +31,7 @@ def _build_trapezoid_filterbank(
     n_fft: int,
     edges,
     overlap: float,
+    slope_db: float = 60.0,
     device=None,
     dtype=torch.float32,
     normalize_energy: bool = True,
@@ -127,14 +128,14 @@ def _build_trapezoid_filterbank(
 
         # rising ramp (support_start -> plateau_start)
         left_region = (x_r >= support_start_r) & (x_r < plateau_start_r)
-        left_db = -60.0 + 60.0 * (x_r - support_start_r) / ramps_r
-
+        left_db = -slope_db + slope_db * (x_r - support_start_r) / ramps_r
+            
         # falling ramp (plateau_end -> support_end)
         right_region = (x_r >= plateau_end_r) & (x_r < support_end_r)
-        right_db = -60.0 + 60.0 * (support_end_r - x_r) / ramps_r
-
-        left_db = torch.clamp(left_db, -60.0, 0.0)
-        right_db = torch.clamp(right_db, -60.0, 0.0)
+        right_db = -slope_db + slope_db * (support_end_r - x_r) / ramps_r
+            
+        left_db = torch.clamp(left_db, -slope_db, 0.0)
+        right_db = torch.clamp(right_db, -slope_db, 0.0)
 
         left_amp = torch.pow(10.0, left_db / 20.0)
         right_amp = torch.pow(10.0, right_db / 20.0)
@@ -162,13 +163,15 @@ def _get_trapezoid_filterbank(
     n_fft: int,
     edges,
     overlap: float,
+    slope_db: float,
     device: torch.device,
     dtype: torch.dtype,
-) -> torch.Tensor:
+    ) -> torch.Tensor:
     key = (
         n_fft,
         _hash_edges(edges),
         float(overlap),
+        float(slope_db),
         str(device),
         str(dtype),
     )
@@ -177,6 +180,7 @@ def _get_trapezoid_filterbank(
             n_fft=n_fft,
             edges=edges,
             overlap=overlap,
+            slope_db=slope_db,
             device=device,
             dtype=dtype,
         )
@@ -242,13 +246,8 @@ def trapezoid_spectrogram(
     else:
         raise ValueError("y must have shape (T,) or (B, T)")
 
-    if torch.min(y) < -1.0:
-        print("min value is", torch.min(y))
-    if torch.max(y) > 1.0:
-        print("max value is", torch.max(y))
-
     device = y.device
-    dtype = y.dtype if y.dtype in (torch.float32, torch.float64) else torch.float32
+    dtype =  torch.float32
 
     if y.dtype != dtype:
         y = y.to(dtype)

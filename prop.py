@@ -44,7 +44,6 @@ def configure_frequency_axis(ax, use_log_scale: bool) -> None:
         ax.xaxis.set_minor_locator(NullLocator())
         ax.xaxis.set_minor_formatter(NullFormatter())
         ax.tick_params(axis="x", which="major", labelsize=11)
-        ax.tick_params(axis="x", which="minor", labelsize=8, labelbottom=True)
     else:
         ax.set_xscale("linear")
         ax.xaxis.set_minor_locator(NullLocator())
@@ -71,6 +70,23 @@ def choose_legend_columns(n_items: int) -> int:
     if n_items <= 24:
         return 2
     return 3
+
+
+def convert_values_for_plot(
+    values: np.ndarray,
+    convert_to_db: bool,
+    eps: float,
+) -> np.ndarray:
+    """
+    Convert y-values for plotting. If convert_to_db is True, use dB scale.
+    Otherwise keep linear values.
+    """
+    values = np.asarray(values, dtype=np.float64)
+
+    if convert_to_db:
+        return 20.0 * np.log10(np.maximum(values, eps))
+
+    return values
 
 
 # ==========================================================
@@ -118,7 +134,7 @@ def plot_spectrum_dict_template(
     ] = None,
     overlay_provider_fn: Optional[Callable[[np.ndarray], List[dict]]] = None,
     eps: float = 1e-11,
-    x_ticks_from_overlay=True,
+    x_ticks_from_overlay: bool = True,
 ):
     """
     Generic plotting function for phoneme/spectrum dictionaries.
@@ -164,8 +180,11 @@ def plot_spectrum_dict_template(
         last_transformed_x = transformed_x
         all_x_ticks.append(transformed_x)
 
-        if convert_to_db:
-            transformed_y = 20.0 * np.log10(transformed_y + eps)
+        transformed_y = convert_values_for_plot(
+            values=transformed_y,
+            convert_to_db=convert_to_db,
+            eps=eps,
+        )
 
         color = colors[color_index]
         line_style = line_styles[line_style_index]
@@ -192,12 +211,21 @@ def plot_spectrum_dict_template(
     overlays = overlay_provider_fn(last_transformed_x)
     for overlay in overlays:
         overlay_x = np.asarray(overlay["x"])
+        overlay_y = np.asarray(overlay["y"])
+
         if x_ticks_from_overlay:
             all_x_ticks.append(overlay_x)
 
+        if overlay.get("apply_scale", True):
+            overlay_y = convert_values_for_plot(
+                values=overlay_y,
+                convert_to_db=convert_to_db,
+                eps=eps,
+            )
+
         ax.plot(
             overlay_x,
-            overlay["y"],
+            overlay_y,
             label=overlay.get("label"),
             color=overlay.get("color", "black"),
             linestyle=overlay.get("linestyle", "-"),
@@ -206,8 +234,12 @@ def plot_spectrum_dict_template(
         )
 
     ax.set_xlabel("Frequency (Hz)")
-    ax.set_ylabel("Magnitude (dB)" if convert_to_db else "Magnitude")
+    ax.set_ylabel("Magnitude (dB)" if convert_to_db else "Magnitude (linear)")
     ax.set_title(title or "Spectra")
+
+    if convert_to_db:
+        ax.set_ylim(bottom=-80.0)
+    
 
     configure_frequency_axis(ax, use_log_scale=use_log_frequency_axis)
 
@@ -279,8 +311,8 @@ def build_filterbank_overlay_provider(
     """
     Build an overlay provider for plotting filterbank curves.
     """
-    filterbank_matrix = np.asarray(filterbank_matrix)
-    filterbank_x_axis = np.asarray(filterbank_x_axis)
+    filterbank_matrix = np.asarray(filterbank_matrix, dtype=np.float64)
+    filterbank_x_axis = np.asarray(filterbank_x_axis, dtype=np.float64)
 
     def overlay_provider_fn(base_x_axis: np.ndarray):
         del base_x_axis
@@ -296,12 +328,13 @@ def build_filterbank_overlay_provider(
             overlays.append(
                 {
                     "x": filterbank_x_axis,
-                    "y": 10.0 * filterbank_matrix[filter_index],
+                    "y": filterbank_matrix[filter_index],
                     "label": "filter_{}".format(filter_index) if n_to_plot <= 12 else None,
                     "color": "black",
                     "linestyle": "-",
                     "linewidth": 1.0,
                     "alpha": alpha,
+                    "apply_scale": True,
                 }
             )
         return overlays
@@ -335,6 +368,7 @@ def build_vertical_marker_overlay_provider(
                     "linestyle": linestyle,
                     "linewidth": 1.0,
                     "alpha": alpha,
+                    "apply_scale": False,
                 }
             )
         return overlays
@@ -368,12 +402,13 @@ def build_mel_filterbank_overlay_provider(
             overlays.append(
                 {
                     "x": fft_freq_axis_hz,
-                    "y": mel_filterbank[filter_index]*1000,
+                    "y": mel_filterbank[filter_index],
                     "label": "mel_{:03d}".format(filter_index) if n_to_plot <= 12 else None,
                     "color": "black",
                     "linestyle": "-",
                     "linewidth": 1.0,
                     "alpha": alpha,
+                    "apply_scale": True,
                 }
             )
         return overlays
@@ -406,19 +441,6 @@ def build_trapezoid_projection_transform(
     """
     Build a transform callback for plot_spectrum_dict_template that projects
     an FFT spectrum into trapezoid-filterbank band values.
-
-    Parameters
-    ----------
-    edges : array-like
-        Filter edge indices for `trapezoid_filter_fft`.
-    band_centers_hz : np.ndarray
-        X-axis to use for plotted trapezoid band values.
-    overlap : float
-        Trapezoid side-ramp fraction passed to `trapezoid_filter_fft`.
-    apply_log : bool
-        If True, convert band values to dB inside the transform.
-    eps : float
-        Numerical floor for log conversion.
     """
     edges = np.asarray(edges, dtype=np.int64)
     band_centers_hz = np.asarray(band_centers_hz, dtype=np.float64)
@@ -439,13 +461,12 @@ def build_trapezoid_projection_transform(
 
     return transform_fn
 
-
 def build_mel_projection_transform(
     mel_filterbank: np.ndarray,
     mel_centers_hz: np.ndarray,
 ):
     """
-    Build a transform callback that projects FFT spectra into mel-band energies
+    Build a transform callback that projects FFT spectra into mel-band amplitudes
     and returns mel center frequencies.
     """
     mel_filterbank = np.asarray(mel_filterbank, dtype=np.float64)
@@ -454,8 +475,8 @@ def build_mel_projection_transform(
     def transform_fn(values, x_axis):
         del x_axis
         values = np.asarray(values, dtype=np.float64)
-        mel_energy = mel_filterbank @ (values ** 2)
-        return mel_centers_hz, mel_energy
+        mel_amplitude = mel_filterbank @ values
+        return mel_centers_hz, mel_amplitude
 
     return transform_fn
 
@@ -503,7 +524,7 @@ def save_plot(
     convert_to_db: bool,
     spectrum_transform_fn=None,
     overlay_provider_fn=None,
-    x_ticks_from_overlay=True
+    x_ticks_from_overlay: bool = True,
 ) -> None:
     fig, _ = plot_spectrum_dict_template(
         spectra_by_label=spectra_by_label,
@@ -518,7 +539,7 @@ def save_plot(
         use_log_frequency_axis=False,
         spectrum_transform_fn=spectrum_transform_fn,
         overlay_provider_fn=overlay_provider_fn,
-        x_ticks_from_overlay=x_ticks_from_overlay
+        x_ticks_from_overlay=x_ticks_from_overlay,
     )
     fig.savefig(output_path)
     plt.close(fig)
@@ -558,6 +579,7 @@ def compute_trapezoid_plot_artifacts(
     n_fft_bins: int,
     edges: np.ndarray,
     overlap: float,
+    slope_db: float,
     n_filters: int,
 ):
     fft_freq_axis_hz = np.linspace(1.0, sr / 2.0, n_fft_bins)
@@ -571,6 +593,7 @@ def compute_trapezoid_plot_artifacts(
         n_fft=n_fft_for_filterbank,
         edges=edges,
         overlap=overlap,
+        slope_db=slope_db,
         device=torch.device("cpu"),
         dtype=torch.float32,
     ).detach().cpu().numpy()
@@ -591,51 +614,6 @@ def compute_trapezoid_plot_artifacts(
     return fft_freq_axis_hz, filter_center_hz, trapezoid_transform_fn, trapezoid_overlay_fn
 
 
-def save_mel_projection_plot(
-    output_path: Path,
-    phoneme_fft: Dict[str, np.ndarray],
-    phonemes: Set[str],
-    sr: int,
-    n_mels: int,
-    n_fft: int,
-    fmax: float,
-    title: str,
-) -> None:
-    mel_filterbank, mel_centers_hz = compute_mel_filterbank_and_centers(
-        sr=sr,
-        n_mels=n_mels,
-        n_fft=n_fft,
-        fmax=fmax,
-    )
-
-    mel_transform_fn = build_mel_projection_transform(
-        mel_filterbank=mel_filterbank,
-        mel_centers_hz=mel_centers_hz,
-    )
-
-    fft_freq_axis_hz = np.linspace(0.0, sr / 2.0, n_fft // 2 + 1)
-
-    mel_overlay_fn = build_mel_filterbank_overlay_provider(
-        mel_filterbank=mel_filterbank,
-        fft_freq_axis_hz=fft_freq_axis_hz,
-        max_filters_to_plot=n_mels,
-        alpha=0.25,
-    )
-
-    save_plot(
-        output_path=output_path,
-        spectra_by_label=phoneme_fft,
-        x_axis=fft_freq_axis_hz,
-        selected_labels=phonemes,
-        title=title,
-        sample_rate=sr,
-        convert_to_db=True,
-        spectrum_transform_fn=mel_transform_fn,
-        overlay_provider_fn=mel_overlay_fn,
-        x_ticks_from_overlay=False
-    )
-
-
 def main(
     phoneme_energy_pkl: Path,
     sr: int,
@@ -649,6 +627,8 @@ def main(
     output_dir: Path,
 ):
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    convert_to_db = True
 
     phoneme_fft = load_phoneme_amp_dict(phoneme_energy_pkl)
     phonemes = get_selected_phonemes()
@@ -674,8 +654,45 @@ def main(
         sr=sr,
         n_fft_bins=n_fft_bins,
         edges=edges,
-        overlap=0.25,
+        overlap=0.3,
+        slope_db=75.0,
         n_filters=n_filters,
+    )
+
+    mel128_filterbank, mel128_centers_hz = compute_mel_filterbank_and_centers(
+        sr=22050,
+        n_mels=128,
+        n_fft=1022,
+        fmax=11025.0,
+    )
+    mel128_fft_freq_axis_hz = np.linspace(0.0, 22050 / 2.0, 1022 // 2 + 1)
+    mel128_transform_fn = build_mel_projection_transform(
+        mel_filterbank=mel128_filterbank,
+        mel_centers_hz=mel128_centers_hz,
+    )
+    mel128_overlay_fn = build_mel_filterbank_overlay_provider(
+        mel_filterbank=mel128_filterbank,
+        fft_freq_axis_hz=mel128_fft_freq_axis_hz,
+        max_filters_to_plot=128,
+        alpha=0.25,
+    )
+
+    mel80_filterbank, mel80_centers_hz = compute_mel_filterbank_and_centers(
+        sr=16000,
+        n_mels=80,
+        n_fft=1022,
+        fmax=8000.0,
+    )
+    mel80_fft_freq_axis_hz = np.linspace(0.0, 16000 / 2.0, 1022 // 2 + 1)
+    mel80_transform_fn = build_mel_projection_transform(
+        mel_filterbank=mel80_filterbank,
+        mel_centers_hz=mel80_centers_hz,
+    )
+    mel80_overlay_fn = build_mel_filterbank_overlay_provider(
+        mel_filterbank=mel80_filterbank,
+        fft_freq_axis_hz=mel80_fft_freq_axis_hz,
+        max_filters_to_plot=80,
+        alpha=0.25,
     )
 
     # 1. Original FFT spectra
@@ -684,9 +701,11 @@ def main(
         spectra_by_label=phoneme_fft,
         x_axis=fft_freq_axis_hz,
         selected_labels=phonemes,
-        title="Original phoneme FFT spectra (dB)",
+        title="Original phoneme FFT spectra ({})".format(
+            "dB" if convert_to_db else "linear"
+        ),
         sample_rate=sr,
-        convert_to_db=True,
+        convert_to_db=convert_to_db,
     )
 
     # 2. Trapezoid-filtered spectra + filter shapes
@@ -695,36 +714,45 @@ def main(
         spectra_by_label=phoneme_fft,
         x_axis=fft_freq_axis_hz,
         selected_labels=phonemes,
-        title="Trapezoid-filtered phoneme spectra with filter shapes",
+        title="Trapezoid-filtered phoneme spectra with filter shapes ({})".format(
+            "dB" if convert_to_db else "linear"
+        ),
         sample_rate=sr,
-        convert_to_db=True,
+        convert_to_db=convert_to_db,
         spectrum_transform_fn=trapezoid_transform_fn,
         overlay_provider_fn=trapezoid_overlay_fn,
-        # x_ticks_from_overlay=False
     )
 
     # 3. 128 mel filters, 0 - 11025 Hz
-    save_mel_projection_plot(
+    save_plot(
         output_path=output_dir / "phoneme_mel_128_11025hz_with_filters.jpg",
-        phoneme_fft=phoneme_fft,
-        phonemes=phonemes,
-        sr=22050,
-        n_mels=128,
-        n_fft=1022,
-        fmax=11025.0,
-        title="Phoneme FFT projected to 128 mel bands + mel filter shapes",
+        spectra_by_label=phoneme_fft,
+        x_axis=mel128_fft_freq_axis_hz,
+        selected_labels=phonemes,
+        title="Phoneme FFT projected to 128 mel bands + mel filter shapes ({})".format(
+            "dB" if convert_to_db else "linear"
+        ),
+        sample_rate=22050,
+        convert_to_db=convert_to_db,
+        spectrum_transform_fn=mel128_transform_fn,
+        overlay_provider_fn=mel128_overlay_fn,
+        x_ticks_from_overlay=False,
     )
 
     # 4. 80 mel filters, 0 - 8000 Hz
-    save_mel_projection_plot(
+    save_plot(
         output_path=output_dir / "phoneme_mel_80_8000hz_with_filters.jpg",
-        phoneme_fft=phoneme_fft,
-        phonemes=phonemes,
-        sr=16000,
-        n_mels=80,
-        n_fft=1022,
-        fmax=8000.0,
-        title="Phoneme FFT projected to 80 mel bands + mel filter shapes",
+        spectra_by_label=phoneme_fft,
+        x_axis=mel80_fft_freq_axis_hz,
+        selected_labels=phonemes,
+        title="Phoneme FFT projected to 80 mel bands + mel filter shapes ({})".format(
+            "dB" if convert_to_db else "linear"
+        ),
+        sample_rate=16000,
+        convert_to_db=convert_to_db,
+        spectrum_transform_fn=mel80_transform_fn,
+        overlay_provider_fn=mel80_overlay_fn,
+        x_ticks_from_overlay=False,
     )
 
 
