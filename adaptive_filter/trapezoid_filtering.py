@@ -191,6 +191,79 @@ def _get_trapezoid_filterbank(
 # STFT -> trapezoid-band spectrogram
 # ============================================================
 
+
+def trapezoid_spectrogram_from_stft_batch(
+    stft,
+    n_fft,
+    edges,
+    sampling_rate,
+    overlap=0.25,
+    normalize_fn=None,
+    eps=1e-9,
+):
+    """
+    Fast trapezoid-band spectrogram from STFT magnitude.
+
+    Parameters
+    ----------
+    stft : torch.Tensor
+        Shape (B, K, T) or (K, T), where K = n_fft // 2 + 1.
+        Expected to be STFT magnitude, not waveform.
+    n_fft : int
+        FFT size.
+    edges : array-like or torch.Tensor, shape (n_filters + 1,)
+        Local bin edges.
+    sampling_rate : int
+        Unused here directly, kept for API parity.
+    overlap : float
+        Side ramp fraction of each band width.
+    normalize_fn : callable or None
+        Optional post-processing, e.g. spectral_normalize_torch.
+    eps : float
+        Magnitude floor.
+
+    Returns
+    -------
+    spec_bands : torch.Tensor
+        Shape (B, n_filters, n_frames) if input is batched,
+        or (n_filters, n_frames) if input was 2D.
+    """
+    if stft.dim() == 2:
+        stft = stft.unsqueeze(0)
+        squeeze_batch = True
+    elif stft.dim() == 3:
+        squeeze_batch = False
+    else:
+        raise ValueError("stft must have shape (K, T) or (B, K, T)")
+
+    device = stft.device
+    dtype = torch.float32
+
+    if stft.dtype != dtype:
+        stft = stft.to(dtype)
+
+    stft = stft.clamp_min_(eps)
+
+    filterbank = _get_trapezoid_filterbank(
+        n_fft=n_fft,
+        edges=edges,
+        overlap=overlap,
+        device=device,
+        dtype=dtype,
+    )
+
+    # (F, K) @ (B, K, T) -> (B, F, T)
+    spec = torch.matmul(filterbank, stft)
+
+    if normalize_fn is not None:
+        spec = normalize_fn(spec)
+
+    if squeeze_batch:
+        spec = spec.squeeze(0)
+
+    return spec
+
+
 def trapezoid_spectrogram(
     y,
     n_fft,
@@ -252,13 +325,7 @@ def trapezoid_spectrogram(
     if y.dtype != dtype:
         y = y.to(dtype)
 
-    filterbank = _get_trapezoid_filterbank(
-        n_fft=n_fft,
-        edges=edges,
-        overlap=overlap,
-        device=device,
-        dtype=dtype,
-    )
+
     window = _get_hann_window(win_size=win_size, device=device, dtype=dtype)
 
     # Match the padding style from the mel example when center=False
@@ -281,16 +348,15 @@ def trapezoid_spectrogram(
         return_complex=True,
     )  # (B, K, frames)
 
-    spec = spec.abs().clamp_min_(eps)
-
-    # (F, K) @ (B, K, T) -> (B, F, T)
-    spec = torch.matmul(filterbank, spec)
-
-    if normalize_fn is not None:
-        spec = normalize_fn(spec)
-
-    if squeeze_batch:
-        spec = spec.squeeze(0)
+    spec = trapezoid_spectrogram_from_stft_batch(
+        spec,
+        n_fft,
+        edges,
+        sampling_rate,
+        overlap=overlap,
+        normalize_fn=normalize_fn,
+        eps=eps
+    )
 
     return spec
 
